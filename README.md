@@ -19,9 +19,22 @@ the stock, so nothing can be placed that you do not own.
 
 ```
 modules/batteries/   browser module served by Yuvomi at /m/batteries   (turn C)
-service/app/         sidecar: db.mjs (schema, migrations, triggers), places.mjs (domain)
+service/app/         sidecar: db.mjs (schema, migrations, triggers), places.mjs (domain),
+                     auth.mjs (Yuvomi /auth/me), server.mjs (REST, node:http), mcp.mjs (agent tools)
 service/test/        node --test suites
 ```
+
+Run the sidecar locally:
+
+```sh
+PORT=3100 DB_PATH=./batteries.db YUVOMI_INTERNAL_URL=http://yuvomi:3000 \
+PUBLIC_ORIGIN=https://home.example HOUSEHOLD_TZ=America/Merida node service/app/server.mjs
+```
+
+Callers authenticate with their Yuvomi session cookie (the module page) or with
+`Authorization: Bearer <Yuvomi API token>` (the agent); every request is checked against Yuvomi's
+`GET /api/v1/auth/me` and the `ext:batteries` permission. The MCP endpoint is
+`POST /api/extensions/batteries/mcp` (Streamable HTTP, JSON responses).
 
 ## Development
 

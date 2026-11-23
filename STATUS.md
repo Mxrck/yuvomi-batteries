@@ -1,7 +1,154 @@
-# STATUS — turno A (Fases 0 y 1), 2026-11-23
+# STATUS
 
 Plan vigente: `~/.hermes/plans/2026-11-23_0930-yuvomi-modulo-baterias-v3.md`.
-Rama de trabajo: **`feat/dominio`** (no se hizo commit en `main`; el merge lo decide la revisión).
+
+---
+
+# Turno B (Fases 2 y 3), 2026-11-23 — sobre `main`
+
+## Hecho
+
+- **`service/app/auth.mjs`**: cookie de sesión de Yuvomi (`yuvomi.sid`) **o**
+  `Authorization: Bearer <token>`, nunca las dos (`400 credentials_conflict`). La credencial se
+  reenvía tal cual a `${YUVOMI_INTERNAL_URL}/api/v1/auth/me` junto con `X-Forwarded-For`; con Bearer
+  no se manda ninguna cookie a Yuvomi. Permisos desde `permissions.modules['ext:batteries']`, con
+  override `user.role === 'admin'` o `permissions.admin === true` ⇒ `write`. Fuera de
+  `access_scope === 'family'` → `403 family_scope_required` (fail closed si falta). Caché por hash de la
+  credencial: 5 s si es válida, 2 s si Yuvomi responde 401/403, **sin caché** para 5xx o errores de red
+  (`502 yuvomi_unavailable`). CSRF solo con cookie: `Origin === PUBLIC_ORIGIN` y `x-csrf-token` igual a
+  la cookie `csrf-token`.
+- **`service/app/server.mjs`** (`node:http` puro). Todas las rutas de la tabla del plan bajo
+  `/api/extensions/batteries`, más `POST …/mcp`. Orden fijo: credencial → `/auth/me` → permiso → CSRF →
+  ruta, así que **401 llega antes que 404** y un anónimo no descubre rutas. Respuestas `{data,
+  resumen_humano?}`; errores `{error, code, reason, details?}` con `code` numérico; 405 con `Allow`,
+  415, 413 (64 KB), `invalid_json`. Log de una línea JSON por request (método, path sin query,
+  status, ms); **nunca** cabeceras ni cuerpos. `SIGTERM`/`SIGINT` → `server.close()` + `closeDb()`.
+- **`service/app/humanize.mjs`**: `resumen_humano` en español para cada mutación, más `poolLine` y
+  `placeLine` para las lecturas del agente.
+- **`service/app/mcp.mjs`**: Streamable HTTP mínimo con respuestas JSON (sin SSE ni sesiones).
+  `initialize` negocia la versión (`2025-11-25`, `2025-06-18`, `2025-03-26`; ante una versión
+  desconocida responde `2025-11-25`), `notifications/*` → 202, `ping`, `tools/list` y `tools/call`.
+  GET/DELETE → 405, método desconocido → -32601, mensaje inválido → -32600, JSON roto → -32700,
+  batch soportado. Las **8 tools de intención** del plan. Los errores de dominio salen como
+  `isError: true` con `{error, code, reason, details}`. Lecturas con permiso `read`, escrituras con
+  `write`, comprobado por tool.
+- **Dominio** (`places.mjs`), lo que pedía el MCP para no tener lógica propia:
+  `addStock`, `receiveStock` ("compré 12": suma o crea; dos candidatos → ambiguo), `lastUse`
+  (plantilla implícita), `resolvePlace` (nombre aproximado → un lugar, o `ambiguous_target` con
+  candidatos), `resolveDestination` (destino **sin** coincidencia aproximada), `resolvePool`,
+  `matchPools` y `runIdempotent`.
+- **Tests: 77 en verde** (eran 47) en un solo `npm test`, estables en 3 corridas. Por archivo: auth
+  6, server 8, mcp 6, resolve 8, humanize 2, más los 47 del turno A. Doble de `/auth/me` con `fetch`
+  inyectado, así que CI no depende de Yuvomi. **Prueba de que los tests detectan regresiones**:
+  anular `assertCsrf` tumba 2 tests y quitar el override de admin tumba 13.
+
+| Paso del plan | Test |
+|---|---|
+| 20 | `auth: 20 · no credential is 401…`, `server: 20 · no credential → 401…` |
+| 21 | `auth.mjs` (los 6 tests de `auth.test.mjs`, incluido el de caché 5 s/2 s/sin caché en 5xx) |
+| 22 | `auth: 22 · read can GET but not POST…`, `server: 22 · …` |
+| 23 | `auth: 23 · CSRF…`, `server: 23 · cookie + foreign Origin → csrf_invalid and nothing written…` |
+| 24 | `server: 24 · every mutation route answers data + resumen_humano…` (8 rutas) |
+| 25 | **pendiente (turno C)**: el grep contra `innerHTML` interpolado solo tiene sentido cuando exista la UI |
+| 26 | `mcp: 26 · initialize…/tools/list…`, `mcp: 26 · invalid Bearer → 401…` |
+| 27 | `mcp.mjs`, y el flujo completo `the agent flow: …` |
+| 28 | `mcp: 28 · an ambiguous place returns candidates as a tool error and writes nothing` |
+| 29 | sustituido: ver *Verificación real*, punto 6 |
+
+## Verificación real (servidor local, Yuvomi 2.94.0 de producción como `/auth/me`)
+
+Servidor: `PORT=18184 YUVOMI_INTERNAL_URL=http://192.168.50.211:8180
+PUBLIC_ORIGIN=https://familia.marcomaldonado.com HOUSEHOLD_TZ=America/Merida
+DB_PATH=/tmp/batteries-turnoB.db node service/app/server.mjs`. El token se leyó de `~/.hermes/.env`
+(`YUVOMI_MCP_TOKEN`) sin imprimirlo; un grep confirma que no aparece en ningún archivo del repo.
+
+1. `curl …/health` sin credencial → **200** `{"ok":true}`.
+2. `curl …/summary` sin credencial → **401** `{"error":"Not authenticated.","code":401,"reason":"not_authenticated"}`.
+3. `curl …/summary` con Bearer → **200** `{"data":[]}` (base vacía), con identidad tomada de
+   `/auth/me`. Lo que devolvió Yuvomi para ese token: `user {id:1, role:"admin",
+   access_scope:"family", display_name:"Marco"}`, `permissions.admin: true`, y `permissions.modules`
+   con los 15 módulos de core (`calendar`, `tasks`, `notes`, `contacts`, `meals`, `shopping`, `pantry`,
+   `inventory`, `budget`, `documents`, `housekeeping`, `waste`, `rewards`, `health`, `schedule`) en
+   `write` más `ext:cleaningplan: write`. **No trae `ext:batteries`** porque el módulo aún no está
+   instalado: escribe por el override de admin. El token es de acceso total (sin scopes).
+4. `POST …/pools` con Bearer → **201**. `POST …/places/place` con Bearer, **sin CSRF** y con
+   `Origin: https://evil.example` → **200**, resumen *"Tren Thomas de Ángel: 3 AAA Duracell Recharge
+   (desde Sin ubicar)"*; en `movements` quedó `actor_user_id 1`, `actor_name "Marco"`, `via "ui"`.
+   El mismo POST con cookie falsa (`yuvomi.sid=falsa123`) y Origin ajeno → **401** (Yuvomi rechaza la
+   sesión antes de llegar al CSRF; el 403 `csrf_invalid` con sesión válida está cubierto por los tests,
+   porque no hay sesión real de navegador que usar aquí). Repetido con el Origin correcto → 401
+   servido desde la caché de 2 s (1 ms en el log).
+5. Handshake MCP con `curl`: `initialize` → `protocolVersion 2025-11-25`, `capabilities.tools`,
+   `serverInfo yuvomi-batteries 0.1.0`; `notifications/initialized` → **202**; `tools/list` → las 8
+   tools; `tools/call resumen` → *"AAA Duracell Recharge: 24 = 3 en aparatos · 0 en cargador · 0 en
+   cajón · 21 sin ubicar"*; `cambiar_pilas {lugar:"el tren thomas"}` → `isError` con
+   `insufficient_drawer {needed:3, available:0}` (correcto: no había cajón, y no escribió nada);
+   Bearer inválido → **401**.
+6. **Cliente MCP real**: el SDK de Hermes (`mcp 2.0.0` del venv de hermes-agent) conectado como lo
+   hace su transporte, con `httpx2` y la cabecera `mcp-protocol-version` sembrada desde el handshake
+   (script en `~/.hermes/profiles/claudio/cache/scratch/mcp-client-check/check.py`, fuera del repo).
+   Resultados: `initialize → 2025-11-25`, `list_tools` → las 8, `resumen` y `donde_estan` correctos
+   (*"…puestas hace 11 días"* para el 12/nov, calendario de Mérida) y `ping` ok. El SDK solo hizo
+   POST: ni GET de SSE ni DELETE, porque no hay `Mcp-Session-Id`. No se usó `hermes mcp test`
+   porque exige registrar el servidor en `config.yaml`, que este turno prohíbe; queda para el turno D.
+7. `kill -TERM`: log `SIGTERM: closing`, el proceso termina, y el `-wal` de 115 KB queda integrado en
+   el archivo principal (desaparecen `-wal`/`-shm`). Así la copia de respaldo queda completa.
+
+`/tmp/batteries-turnoB.db` **sigue ahí** para la revisión de Hermes (1 pool, 1 lugar, 2 movimientos).
+
+## Desviaciones y decisiones del turno B
+
+1. **La idempotencia de las tools MCP va por tool, no por operación de dominio.** Las tools
+   resuelven nombres contra el estado antes de escribir, así que un reintento podía tomar otro
+   camino. Ejemplos: `agregar_stock` crea el pool la primera vez y lo *suma* la segunda; `mover` de un
+   lugar entero falla en el reintento porque el origen ya está vacío. Por eso cada tool de escritura
+   corre entera en `runIdempotent(db, 'mcp:<tool>', argumentos_crudos, …)`: **una transacción y un
+   `request_id`** para resolución + escritura. `mutation()` se volvió **reentrante**: una operación
+   llamada dentro de otra se une a su transacción. Efecto adicional: resolver y escribir es atómico.
+2. **Destinos sin coincidencia aproximada.** `resolvePlace` (origen: "el tren de Percy") sí acepta
+   coincidencias parciales, con ambigüedad explícita. `resolveDestination` no: un nombre parecido a un
+   lugar existente suele ser un aparato *nuevo* ("Control minisplit" no es "Control TV"), y meter pilas
+   en el lugar equivocado en silencio es justo el error que el módulo existe para evitar. Excepción:
+   las palabras sueltas "cargador"/"cajón" usan el único de la casa (con dos → ambiguo).
+3. **Plantilla implícita**: sin `cantidad` y/o sin pool, se usa el último reparto de **ese lugar**
+   (`lastUse`), solo si coincide con los filtros dados. Entre varios pools posibles, el último uso del
+   lugar desempata. Si no hay uso previo, ambiguo. La cantidad se infiere solo si el pool coincide.
+4. **`donde_estan` con un nombre ambiguo lista todos los candidatos** en vez de fallar: es una
+   pregunta, no una escritura. Solo las escrituras se niegan a elegir.
+5. **`agregar_stock` → `receiveStock`** en el dominio: suma al pool que coincide con los campos dados
+   o lo crea; con dos candidatos (misma marca, distintas líneas) → `ambiguous_target`.
+6. **Herramientas en español con argumentos en español** (`lugar`, `cantidad`, `tipo`, `marca`,
+   `linea`, `desde`, `hacia`, `viejas_a: cargador|cajon|basura`, `clase_lugar: aparato|cargador|cajon`,
+   `cantidad_nueva`, `fecha`, `delta`, `request_id`). Respecto a la tabla del plan se agregaron
+   `clase_lugar` (para crear un cargador o cajón nuevo), `desde`, `fecha` y `cantidad_nueva`.
+   `viejas_a` toma `cargador` por defecto.
+7. **Cookie de sesión = `yuvomi.sid`** (según `components.securitySchemes.cookieAuth` del OpenAPI
+   2.94.0). Una petición con Bearer puede traer otras cookies (Cloudflare, etc.) sin conflicto; solo
+   choca si trae también `yuvomi.sid`.
+8. **Un 403 de `/auth/me` se trata como 401** (credencial no válida para nosotros, cacheada 2 s). Un
+   5xx es `502 yuvomi_unavailable` y no se cachea.
+9. **El MCP exige `read` a nivel HTTP** (para que `tools/list` funcione con un rol de solo lectura) y
+   `write` por tool de escritura. Con cookie, el CSRF también aplica a `POST /mcp`.
+10. `resumen_humano` **solo en español** (es para la conversación). La página del módulo tendrá sus
+    textos en `locales/`.
+
+## Pendiente para el turno C
+
+- UI del módulo (`modules/batteries`): `module.json` (`capabilities.api.prefix` y
+  `capabilities.permissions.module`), `lib/api.js` (fetch same-origin, CSRF con reintento como
+  cleaningplan, `ExtError` con `code`/`reason`), vista **Lugares** + hoja de stock + historial por
+  lugar, `locales/es.json` + `en.json` con `menu`/`module`.
+- **Paso 25**: test con grep que prohíba `innerHTML` interpolado (cuando exista la UI).
+- `docker-compose.dev.yml` (Yuvomi local + módulo montado + sidecar): probar que Yuvomi recoge la
+  carpeta copiada **sin reiniciar**, que `ext:batteries` aparece en el catálogo de permisos y, si se
+  quiere el QR de v1.1, si `/m/batteries?lugar=` llega al módulo.
+- Turno D: `hermes mcp test` con el MCP registrado en el perfil `default`; imagen, tienda, NPM.
+
+---
+
+# Turno A (Fases 0 y 1), 2026-11-23
+
+Rama de trabajo de entonces: `feat/dominio`, mergeada en `main` (`ea120ae`) tras la revisión.
 
 ## Hecho
 
