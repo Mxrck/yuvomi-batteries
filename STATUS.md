@@ -4,6 +4,80 @@ Plan vigente: `~/.hermes/plans/2026-11-23_0930-yuvomi-modulo-baterias-v3.md`.
 
 ---
 
+# Turno C (Fase 4 + paso 25), 2026-11-23 — sobre `main`
+
+## Hecho
+
+- **Paso 25 + UI estática** (`test/module/`): escáner propio de template literals con tres checks —
+  nada de `innerHTML`/`outerHTML`/`document.write`, toda interpolación dentro de un template HTML
+  pasa por `esc()`/`num()`/`flag()`/`render*()`/`…Html`, y cero texto duro (entre tags ni en
+  `placeholder`/`title`/`aria-label`/`alt`). Más: el módulo sólo importa las tres fachadas estables.
+  Verificado que **atrapa regresiones**: interpolación sin escapar → 2 tests rojos; texto duro → 1;
+  `innerHTML` → 1 (restaurado después, 103/103).
+- **i18n** (`test/module/i18n.test.mjs`): en/es con las mismas claves y placeholders; claves usadas
+  = claves enviadas; los parámetros que pasa el código son exactamente los placeholders de cada
+  clave; `module.json` alineado con `package.json`.
+- **UI** (`modules/batteries/`): `module.json`, `index.js` (una sola máquina de estado, un listener
+  delegado por evento), `lib/{client,views,format}.js`, `style.css` (sólo `batteries-`), locales
+  es/en. Dos pantallas: Lugares (inicio) y hoja de stock; formularios con `datalist`, plantilla
+  implícita por último uso, fecha de hoy; estados de carga/error-con-reintentar/solo-lectura; ante
+  `stock_exceeded`/`insufficient_drawer` se recarga el desglose real y se muestra el motivo.
+- **`via` separado del transporte**: cookie → `ui`, Bearer REST → `api`, `/mcp` → `mcp`. Criterio:
+  `api` separa scripts/agente-REST del canal conversacional MCP. Migración 2 (`CHECK (via IN
+  ('ui','api','mcp'))`), rutas nuevas `GET /me` y `GET /labels` (labels conocidos para el
+  `datalist` y la plantilla implícita).
+- **Yuvomi local** (`docker-compose.dev.yml` + `Caddyfile.dev` + `scripts/dev-setup.sh` +
+  `scripts/browser/`): Yuvomi 2.94.0 pineado por digest (mismo digest que la app de umbrel),
+  `./.dev/modules` como `/app/modules`, sidecar sobre `node:24-slim` corriendo `./service` directo
+  (sin imagen propia), un solo origen en `127.0.0.1:3300` con Caddy mandando
+  `/api/extensions/batteries/*` al sidecar. Dev-only, datos en `./.dev` (ignorado).
+
+## Tests
+
+**103/103** en un solo `npm test` (81 del servicio + 22 del módulo: 6 estáticos, 4 de i18n, 6 de
+vistas, 6 de format). El script de test carga `test/module/register.mjs` para resolver las fachadas
+`/api.js`, `/i18n.js`, `/utils/html.js` contra stubs.
+
+## Las tres preguntas del plan, con evidencia
+
+- **a) ¿Sirve Yuvomi el módulo copiado a mano sin reiniciar?** **Sí.** Yuvomi levantado a las
+  09:33:39Z con `/app/modules` vacío; `GET /api/v1/modules?admin=1` → `[]`. Copia de
+  `modules/batteries` a las 09:34:05Z (StartedAt y RestartCount=0 sin cambio) → el módulo aparece
+  `status: enabled` con `perm: ext:batteries` y `prefix: /api/extensions/batteries`, sus assets
+  responden 200 (`index.js`, `lib/views.js`, `locales/es.json`, `style.css`) y `/m/batteries` da
+  200 HTML.
+- **b) ¿Aparece `ext:batteries` en el catálogo sin aprobar nada?** **Sí.** `GET
+  /api/v1/permissions/catalog` → `modules` incluye `{key: ext:batteries, extensionModuleId:
+  batteries}` y `scopeModuleKeys` también. Ojo: el **default de un módulo ext es `write` para
+  miembros** (`defaults.module = "write"`, verificado: un miembro nuevo veía `write`), así que en
+  producción hay que bajar el rol del hijo a `read` en el mismo despliegue.
+- **c) ¿Llega `?lugar=` al módulo?** **Sí.** `/m/batteries?lugar=tren-thomas-de-angel` resalta la
+  tarjeta (`location.search` llega intacto al módulo; verificado en el navegador con la clase
+  `batteries-card--focus`).
+
+## Verificación real (navegador headless contra el Yuvomi local)
+
+`scripts/browser/flow.mjs` (driver CDP propio, sin dependencias): la página renderiza en español,
+alta de stock y reparto de 3 pilas por el formulario real, desglose `24 = 3 en aparatos · …`, la
+petición **del navegador** al sidecar visible en el log CDP (`POST /api/extensions/batteries/pools`,
+`POST …/places/place`), `?lugar=` resalta la tarjeta, una etiqueta hostil `<img src=x
+onerror=…>` se muestra como texto y **no ejecuta**, y un miembro `read` ve todo sin botones de
+escritura. La base dev registra esos movimientos con `via: ui`, actor `Admin`. Sin errores de
+consola.
+
+## Desviaciones y pendientes
+
+- El locale del navegador no viene de la preferencia del servidor sino de
+  `localStorage('yuvomi-locale')`/`navigator.languages` (leído en `public/i18n.js` de 2.94.0); el
+  flujo de navegador lo fija en `es` como haría el navegador real de la casa.
+- `docker compose down` quedó **bloqueado** por el modo de aprobación de esta sesión; los
+  contenedores dev (`yuvomi-batteries-dev-*`) siguen levantados con el puerto `127.0.0.1:3300`.
+  Bajarlos: `cd ~/repositories/yuvomi-batteries && docker compose -f docker-compose.dev.yml down`.
+  El contenedor de sondeo `yuvomi-doc-probe` (creado, nunca arrancado) también pide `docker rm`.
+- Yuvomi de producción, app de la tienda y NPM: **intactos** (solo lecturas).
+
+---
+
 # Turno B (Fases 2 y 3), 2026-11-23 — sobre `main`
 
 ## Hecho

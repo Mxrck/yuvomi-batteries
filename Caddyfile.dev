@@ -1,0 +1,10 @@
+# Dev reverse proxy: one origin for Yuvomi and the batteries sidecar. The first handle block is
+# the one rule a production proxy needs (on Umbrel: the NPM location of the Yuvomi host).
+:3000 {
+	handle /api/extensions/batteries/* {
+		reverse_proxy batteries-api:3100
+	}
+	handle {
+		reverse_proxy yuvomi:3000
+	}
+}
