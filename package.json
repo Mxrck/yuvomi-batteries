@@ -1,6 +1,6 @@
 {
   "name": "yuvomi-batteries",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Rechargeable battery places for Yuvomi: module page + sidecar service.",
   "type": "module",

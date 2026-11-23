@@ -6,7 +6,8 @@
 //  - only Yuvomi's three stable facades are imported.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isHtml, jsFiles, read, rel, templateLiterals } from './source.mjs';
+import { join } from 'node:path';
+import { ROOT, isHtml, jsFiles, read, rel, templateLiterals } from './source.mjs';
 
 const ALLOWED_EXPR = [/^esc\(/, /^num\(/, /^flag\(/, /^render[A-Z]\w*\(/, /^\w+Html$/];
 const FACADES = new Set(['/api.js', '/i18n.js', '/utils/html.js']);
@@ -71,4 +72,14 @@ test('the module imports only the stable Yuvomi facades', () => {
       else assert.ok(spec.startsWith('./') || spec.startsWith('../'), `${rel(file)} imports a package: ${spec}`);
     }
   }
+});
+
+// Yuvomi's core CSS pads and spaces the page with direct-child selectors
+// (`.app-page--data > .app-page__body`), so the module must render straight into the container it
+// is given. An extra wrapper div silently removes the page margins against the sidebar and the gap
+// between sections; it was a shipped bug once.
+test('la página se monta directo en el contenedor, sin envoltorio propio', () => {
+  const src = read(join(ROOT, 'index.js'));
+  assert.match(src, /const root = container;/);
+  assert.doesNotMatch(src, /createElement\('div'\)[^;]*\n\s*root\.className/);
 });

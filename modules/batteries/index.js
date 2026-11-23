@@ -17,9 +17,12 @@ export async function render(container, { signal } = {}) {
     access: 'read', pools: [], places: [], labels: [], focus: null,
     panel: null, busy: false, notice: null, error: null, loaded: false,
   };
-  const root = document.createElement('div');
-  root.className = 'batteries';
-  container.replaceChildren(root);
+  // The page must render straight into Yuvomi's container: the core CSS gives the padding
+  // (`--page-inline-pad`) and the spacing between toolbar and body with direct-child selectors
+  // (`.app-page--data > .app-page__body`). One extra wrapper div and the page loses both margins.
+  const root = container;
+  root.classList.add('batteries');
+  root.replaceChildren();
   const canWrite = () => state.access === 'write';
   const aborted = () => signal?.aborted;
 
