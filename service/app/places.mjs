@@ -20,12 +20,15 @@ const DEFAULT_LABEL = { charger: 'Cargador', drawer: 'Cajón' };
 const PLACE_KINDS = ['device', 'charger', 'drawer'];
 const KIND_ORDER = { device: 0, charger: 1, drawer: 2, missing: 3 };
 const LABEL_MAX = 100;
+// The channel a change came through: ui = the module page (session cookie), api = REST with a
+// Bearer token (scripts), mcp = the agent's tools.
+const VIAS = ['ui', 'api', 'mcp'];
 
 // ---------------------------------------------------------------- plumbing
 
 function context(ctx = {}) {
   const via = ctx.via ?? 'ui';
-  if (via !== 'ui' && via !== 'mcp') fail('invalid_input', 'via must be ui or mcp');
+  if (!VIAS.includes(via)) fail('invalid_input', `via must be one of ${VIAS.join(', ')}`);
   const now = ctx.now instanceof Date ? ctx.now : new Date();
   const tz = ctx.tz || HOUSEHOLD_TZ;
   return {
@@ -691,6 +694,28 @@ function activePlaces(db) {
 
 function poolCandidate(p) {
   return { pool_id: p.id, pool_name: poolName(p), total: p.total };
+}
+
+// Every place ever used (Sin ubicar aside), for the page's datalist and its prefill: kind,
+// whether it holds batteries now, and the pool/quantity of its newest row.
+export function knownPlaces(db) {
+  const rows = db.prepare(
+    `SELECT a.slug, a.label, a.kind, a.pool_id, a.quantity, a.closed_on FROM allocations a
+       JOIN pools p ON p.id = a.pool_id
+      WHERE a.kind <> 'missing' AND p.archived_at IS NULL ORDER BY a.id`,
+  ).all();
+  const bySlug = new Map();
+  for (const r of rows) {
+    const prev = bySlug.get(r.slug);
+    bySlug.set(r.slug, {
+      slug: r.slug,
+      label: prev?.label ?? r.label, // the first name a place got stays its name
+      kind: r.kind,
+      active: Boolean(prev?.active) || r.closed_on === null,
+      last: { pool_id: r.pool_id, quantity: r.quantity },
+    });
+  }
+  return [...bySlug.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 // The pool and quantity a place had the last time anything was put there (active or not).

@@ -16,7 +16,8 @@ import { DomainError } from './errors.mjs';
 import { humanize } from './humanize.mjs';
 import { handleMcp } from './mcp.mjs';
 import {
-  archivePool, change, createPool, discard, find, moveTo, place, placeHistory, placesList, summary, updatePool,
+  archivePool, change, createPool, discard, find, knownPlaces, moveTo, place, placeHistory, placesList, summary,
+  updatePool,
 } from './places.mjs';
 
 export const PREFIX = '/api/extensions/batteries';
@@ -101,6 +102,7 @@ function routes() {
       const limit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
       return { data: placeHistory(db, { slug: decodeURIComponent(m[1]), limit }) };
     }],
+    ['GET', /^\/labels$/, ({ db }) => ({ data: knownPlaces(db) })],
     ['GET', /^\/export$/, ({ db }) => ({ data: exportAll(db) })],
   ];
 }
@@ -139,6 +141,14 @@ export function createApp({ db, auth, prefix = PREFIX, log = () => {} }) {
       return send(res, out.status, out.body);
     }
 
+    if (path === '/me') {
+      // Any household member may ask what they can do here; the page draws read-only or "no
+      // access" from the answer instead of from a failing request.
+      if (req.method !== 'GET') throw Object.assign(httpError(405, 'method_not_allowed', 'Use GET.'), { allow: 'GET' });
+      if (identity.scope !== 'family') auth.authorize(identity, 'read'); // throws family_scope_required
+      return send(res, 200, { data: { user_id: identity.userId, name: identity.name, access: identity.access } });
+    }
+
     const sameRoute = table.filter(([, re]) => re.test(path));
     const route = sameRoute.find(([method]) => method === req.method);
     if (!route) {
@@ -151,7 +161,9 @@ export function createApp({ db, auth, prefix = PREFIX, log = () => {} }) {
     auth.assertCsrf(req, identity);
     const body = req.method === 'GET' ? {} : await readJson(req);
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw httpError(400, 'invalid_input', 'The body must be a JSON object.');
-    const ctx = { actorUserId: identity.userId, actorName: identity.name, via: 'ui' };
+    // The channel follows the transport: the module page sends the session cookie, a script sends a
+    // Bearer token. (The agent comes through /mcp, which records 'mcp'.)
+    const ctx = { actorUserId: identity.userId, actorName: identity.name, via: identity.credential === 'cookie' ? 'ui' : 'api' };
     const out = route[2]({ db, body, ctx, url, m: path.match(route[1]) });
     const payload = { data: out.data };
     if (out.operation) payload.resumen_humano = humanize(out.operation, out.data);

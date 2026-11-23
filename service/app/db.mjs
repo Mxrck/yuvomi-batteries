@@ -105,6 +105,36 @@ const MIGRATIONS = [
         WHERE pool_id = NEW.id AND closed_on IS NULL AND kind <> 'missing');
   END;
   `,
+
+  // 2 — movements.via also accepts 'api' (REST with a Bearer token). SQLite cannot alter a CHECK,
+  // so the table is rebuilt with its rows and indexes.
+  `
+  CREATE TABLE movements_v2 (
+    id             INTEGER PRIMARY KEY,
+    pool_id        INTEGER NOT NULL,
+    allocation_id  INTEGER,
+    action         TEXT NOT NULL,
+    quantity       INTEGER,
+    from_label     TEXT,
+    to_label       TEXT,
+    from_slug      TEXT,
+    to_slug        TEXT,
+    detail         TEXT,
+    actor_user_id  INTEGER,
+    actor_name     TEXT,
+    via            TEXT NOT NULL CHECK (via IN ('ui', 'mcp', 'api')),
+    request_id     TEXT,
+    created_at     TEXT NOT NULL
+  );
+  INSERT INTO movements_v2 (id, pool_id, allocation_id, action, quantity, from_label, to_label, from_slug, to_slug,
+                            detail, actor_user_id, actor_name, via, request_id, created_at)
+    SELECT id, pool_id, allocation_id, action, quantity, from_label, to_label, from_slug, to_slug,
+           detail, actor_user_id, actor_name, via, request_id, created_at FROM movements;
+  DROP TABLE movements;
+  ALTER TABLE movements_v2 RENAME TO movements;
+  CREATE INDEX movements_from_slug ON movements (from_slug);
+  CREATE INDEX movements_to_slug ON movements (to_slug);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
