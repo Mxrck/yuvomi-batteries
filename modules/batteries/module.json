@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "batteries",
+  "name": "Batteries",
+  "version": "0.1.0",
+  "description": "Where every rechargeable battery is: in a device, the charger, the drawer, or unaccounted for.",
+  "entry": "index.js",
+  "style": "style.css",
+  "icon": "battery",
+  "accent": "#16A34A",
+  "i18n": {
+    "defaultLocale": "en"
+  },
+  "menu": {
+    "show": true,
+    "label": "Batteries",
+    "labelKey": "menu",
+    "icon": "battery",
+    "order": 110
+  },
+  "page": {
+    "composition": "data",
+    "width": "content",
+    "navigation": "standard",
+    "responsive": "standard"
+  },
+  "capabilities": {
+    "permissions": {
+      "module": {
+        "labelKey": "module",
+        "icon": "battery"
+      }
+    },
+    "api": {
+      "prefix": "/api/extensions/batteries"
+    }
+  }
+}

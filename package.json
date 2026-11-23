@@ -9,6 +9,6 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test service/test/*.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --import ./test/module/register.mjs --test service/test/*.test.mjs test/module/*.test.mjs"
   }
 }

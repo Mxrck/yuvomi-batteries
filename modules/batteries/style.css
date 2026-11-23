@@ -1,0 +1,73 @@
+/* Batteries page. Only batteries- prefixed rules; every value is a Yuvomi design token. */
+.batteries-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.batteries-section-title { font-size: var(--text-lg); margin: 0; }
+.batteries-readonly,
+.batteries-loading {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-3);
+}
+.batteries-notice {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+}
+.batteries-notice--error { border-color: var(--color-danger, var(--color-border)); color: var(--color-danger, inherit); }
+.batteries-notice--ok { color: var(--color-success, inherit); }
+.batteries-pool .list-row__meta { white-space: normal; }
+.batteries-missing {
+  font-size: var(--text-xs);
+  color: var(--color-warning, var(--color-text-secondary));
+  margin-left: var(--space-1);
+}
+.batteries-notes { white-space: pre-line; }
+.batteries-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.batteries-cards { display: grid; gap: var(--space-3); }
+.batteries-card {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  display: grid;
+  gap: var(--space-2);
+}
+.batteries-card--focus { outline: 2px solid var(--color-primary, currentColor); outline-offset: 2px; }
+.batteries-card__head { display: flex; align-items: center; gap: var(--space-2); }
+.batteries-card__title { font-size: var(--text-base); margin: 0; overflow-wrap: anywhere; }
+.batteries-tag {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 var(--space-2);
+}
+.batteries-card__items { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.batteries-item { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); }
+.batteries-age { color: var(--color-text-secondary); font-size: var(--text-sm); }
+.batteries-form {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  margin: var(--space-2) 0;
+}
+.batteries-form__title { font-size: var(--text-base); margin: 0; }
+.batteries-form__lead { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
+.batteries-field { display: grid; gap: var(--space-1); }
+.batteries-form__actions,
+.batteries-form__extra { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-top: var(--space-1); }
+.batteries-history ul { list-style: none; margin: 0 0 var(--space-2); padding: 0; display: grid; gap: var(--space-2); }
+.batteries-history__row { display: grid; gap: 2px; font-size: var(--text-sm); }
+.batteries-history__when,
+.batteries-history__who { color: var(--color-text-secondary); font-size: var(--text-xs); }
