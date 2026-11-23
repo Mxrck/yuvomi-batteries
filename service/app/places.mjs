@@ -34,11 +34,18 @@ function context(ctx = {}) {
     via, now, tz,
     today: todayIn(tz, now),
     stamp: now.toISOString(),
+    requestId: ctx.requestId ?? null,
   };
 }
 
+// Databases with an open domain transaction. A mutation called inside another one (an MCP tool
+// that resolves names and then writes) joins it instead of opening a second, so the whole tool
+// is one transaction and one request_id.
+const inTransaction = new WeakSet();
+
 function transaction(db, fn) {
   db.exec('BEGIN IMMEDIATE');
+  inTransaction.add(db);
   try {
     const result = fn();
     db.exec('COMMIT');
@@ -46,6 +53,8 @@ function transaction(db, fn) {
   } catch (err) {
     db.exec('ROLLBACK');
     throw fromSqlite(err);
+  } finally {
+    inTransaction.delete(db);
   }
 }
 
@@ -63,6 +72,11 @@ function stable(value) {
 function mutation(db, operation, input, rawCtx, fn) {
   const c = context(rawCtx);
   const { request_id: requestId, ...payload } = input ?? {};
+  if (inTransaction.has(db)) {
+    // Nested: the outer mutation owns the transaction and the request record.
+    if (requestId) fail('invalid_input', 'request_id belongs to the outer operation');
+    return fn(payload, c);
+  }
   if (requestId !== undefined && requestId !== null
       && (typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 100)) {
     fail('invalid_input', 'request_id must be a string of 1 to 100 characters');
@@ -612,6 +626,153 @@ export function placeHistory(db, { slug, limit = 100 } = {}) {
             actor_user_id, actor_name, via, created_at
        FROM movements WHERE from_slug = ? OR to_slug = ? ORDER BY id DESC LIMIT ?`,
   ).all(s, s, n).map((m) => ({ ...m, detail: m.detail ? JSON.parse(m.detail) : null }));
+}
+
+// ---------------------------------------------------------------- stock in
+
+export function addStock(db, input, ctx) {
+  return mutation(db, 'addStock', input, ctx, (p, c) => {
+    const pool = activePool(db, p.pool_id);
+    const delta = int(p.delta, 'delta', { min: 1, max: 10_000 });
+    db.prepare('UPDATE pools SET total = total + ? WHERE id = ?').run(delta, pool.id);
+    recomputeMissing(db, pool.id, c);
+    log(db, c, { poolId: pool.id, action: 'pool_adjusted', quantity: delta, detail: { delta } });
+    return poolView(db, getPool(db, pool.id));
+  });
+}
+
+// "Compré 12 AA Eneloop": adds to the pool that matches the given fields, or creates it when
+// none does. Fields not given match anything; two matches are ambiguous, never a guess.
+export function receiveStock(db, input, ctx) {
+  return mutation(db, 'receiveStock', input, ctx, (p, c) => {
+    const kind = text(p.kind, 'kind', { max: 20 }).toUpperCase();
+    const brand = text(p.brand, 'brand', { max: 60 });
+    const line = text(p.product_line, 'product_line', { required: false, max: 60 });
+    const capacity = int(p.capacity_mah, 'capacity_mah', { min: 1, max: 100_000, required: false });
+    const delta = int(p.delta, 'delta', { min: 1, max: 10_000 });
+    const hits = db.prepare(
+      `SELECT * FROM pools WHERE archived_at IS NULL AND upper(trim(kind)) = ? AND lower(trim(brand)) = lower(?)
+         AND (? IS NULL OR lower(trim(IFNULL(product_line, ''))) = lower(?))
+         AND (? IS NULL OR capacity_mah = ?) ORDER BY id`,
+    ).all(kind, brand, line, line, capacity, capacity);
+    if (hits.length > 1) {
+      fail('ambiguous_target', 'Several pools match; give the line (or capacity).', { candidates: hits.map(poolCandidate) });
+    }
+    if (hits.length === 1) return { created: false, pool: addStock(db, { pool_id: hits[0].id, delta }, c) };
+    const pool = createPool(db, { kind, brand, product_line: line, capacity_mah: capacity, total: delta }, c);
+    return { created: true, pool };
+  });
+}
+
+// Wraps an MCP tool (resolution + write) as one idempotent mutation: one transaction, and the
+// request_id keyed on the tool name and its raw arguments. fn(args, ctx) must pass `ctx` on to
+// the domain operations it calls.
+export function runIdempotent(db, operation, input, ctx, fn) {
+  return mutation(db, operation, input, ctx, fn);
+}
+
+// ---------------------------------------------------------------- resolving free text
+
+const STOPWORDS = new Set(['el', 'la', 'los', 'las', 'de', 'del', 'al', 'a', 'un', 'una', 'en', 'y', 'mi', 'mis', 'su', 'sus', 'lo']);
+
+function tokens(slug) {
+  const all = slug.split('-').filter(Boolean);
+  const meaningful = all.filter((t) => !STOPWORDS.has(t));
+  return meaningful.length ? meaningful : all;
+}
+
+function activePlaces(db) {
+  const rows = db.prepare(
+    `SELECT a.slug, a.label, a.kind FROM allocations a JOIN pools p ON p.id = a.pool_id
+      WHERE a.closed_on IS NULL AND a.kind <> 'missing' AND p.archived_at IS NULL ORDER BY a.id`,
+  ).all();
+  return [...new Map(rows.map((r) => [r.slug, { slug: r.slug, label: r.label, kind: r.kind }])).values()];
+}
+
+function poolCandidate(p) {
+  return { pool_id: p.id, pool_name: poolName(p), total: p.total };
+}
+
+// The pool and quantity a place had the last time anything was put there (active or not).
+export function lastUse(db, slug) {
+  const r = db.prepare(
+    `SELECT a.pool_id, a.quantity, a.kind, a.label FROM allocations a JOIN pools p ON p.id = a.pool_id
+      WHERE a.slug = ? AND a.kind <> 'missing' AND p.archived_at IS NULL ORDER BY a.id DESC LIMIT 1`,
+  ).get(slugify(slug));
+  return r ? { pool_id: r.pool_id, quantity: r.quantity, kind: r.kind, label: r.label } : null;
+}
+
+// An existing place named loosely ("el tren de Percy"): exact slug, else the only active place
+// whose words start with every meaningful word given. Several → ambiguous_target with candidates.
+export function resolvePlace(db, textValue) {
+  const { slug } = placeLabel(textValue, 'lugar');
+  if (slug === MISSING_SLUG) return { ...MISSING_PLACE };
+  const places = activePlaces(db);
+  const exact = places.find((pl) => pl.slug === slug);
+  if (exact) return exact;
+  const want = tokens(slug);
+  const hits = places.filter((pl) => {
+    const have = pl.slug.split('-');
+    return want.every((w) => have.some((h) => h.startsWith(w)));
+  });
+  if (hits.length === 1) return hits[0];
+  if (hits.length > 1) fail('ambiguous_target', 'Several places match; say which one.', { candidates: hits });
+  placeGone(db, slug);
+}
+
+// Where batteries are going. Destinations are NOT matched loosely (a near name is usually a new
+// device): the exact place if it ever existed, the house's only charger/drawer for the bare words
+// "cargador"/"cajón", or a new place.
+export function resolveDestination(db, textValue) {
+  const { slug, label } = placeLabel(textValue, 'lugar');
+  if (slug === MISSING_SLUG) return { ...MISSING_PLACE, isNew: false };
+  const known = db.prepare(
+    "SELECT kind FROM allocations WHERE slug = ? AND kind <> 'missing' ORDER BY (closed_on IS NULL) DESC, id DESC LIMIT 1",
+  ).get(slug);
+  if (known) return { slug, label: labelOfPlace(db, slug, label), kind: known.kind, isNew: false };
+  const words = tokens(slug).join('-');
+  const bare = { cargador: 'charger', cajon: 'drawer' }[words];
+  if (bare) {
+    const same = activePlaces(db).filter((pl) => pl.kind === bare);
+    if (same.length === 1) return { ...same[0], isNew: false };
+    if (same.length > 1) fail('ambiguous_target', 'Several places of that kind; say which one.', { candidates: same });
+  }
+  return { slug, label, kind: null, isNew: true };
+}
+
+function poolFilter({ tipo, marca, linea } = {}) {
+  return {
+    kind: text(tipo, 'tipo', { required: false, max: 20 })?.toUpperCase() ?? null,
+    brand: text(marca, 'marca', { required: false, max: 60 })?.toLowerCase() ?? null,
+    line: text(linea, 'linea', { required: false, max: 60 })?.toLowerCase() ?? null,
+  };
+}
+
+function poolRowsMatching(db, f) {
+  return db.prepare('SELECT * FROM pools WHERE archived_at IS NULL ORDER BY id').all().filter((p) => {
+    const b = p.brand.trim().toLowerCase();
+    return (!f.kind || p.kind.trim().toUpperCase() === f.kind)
+      && (!f.brand || b === f.brand || b.startsWith(`${f.brand} `))
+      && (!f.line || (p.product_line ?? '').trim().toLowerCase() === f.line);
+  });
+}
+
+// Every active pool matching loose filters (type exact, brand exact or first word(s), line exact).
+export function matchPools(db, filters = {}) {
+  return poolRowsMatching(db, poolFilter(filters)).map((p) => poolView(db, p));
+}
+
+// A pool from loose filters (tipo, marca, línea). Several matches are broken only by the last use
+// of the place being talked about (hintSlug); otherwise ambiguous_target with candidates.
+export function resolvePool(db, { tipo, marca, linea, hintSlug } = {}) {
+  const f = poolFilter({ tipo, marca, linea });
+  const hits = poolRowsMatching(db, f);
+  if (hits.length === 1) return poolView(db, hits[0]);
+  if (hits.length === 0) fail('pool_not_found', 'No pool matches.', { tipo: f.kind, marca: f.brand, linea: f.line });
+  const hint = hintSlug ? lastUse(db, hintSlug) : null;
+  const byHint = hint && hits.find((p) => p.id === hint.pool_id);
+  if (byHint) return poolView(db, byHint);
+  fail('ambiguous_target', 'Several pools match; say the type, brand or line.', { candidates: hits.map(poolCandidate) });
 }
 
 export { DomainError };
