@@ -1,0 +1,14 @@
+{
+  "name": "yuvomi-batteries",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rechargeable battery places for Yuvomi: module page + sidecar service.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test service/test/*.test.mjs"
+  }
+}
